@@ -1,0 +1,218 @@
+{
+  "mobilenet": {
+    "oracle_E": 0.1854660448481457,
+    "predictor": {
+      "mape": 0.22008773452166447,
+      "unc_err_spearman": -0.003910597764944124
+    },
+    "explanation_fidelity": {
+      "pearson": 0.9448368484924724,
+      "spearman": 0.8279107037383778,
+      "n": 85
+    },
+    "example_explanation": [
+      {
+        "decision": "dw_7 placement -> npu",
+        "delta_mJ": -43.61064133555713,
+        "true_delta_mJ": -32.69555447504753
+      },
+      {
+        "decision": "conv_4 placement -> npu",
+        "delta_mJ": -32.16319607792107,
+        "true_delta_mJ": -36.6057359745545
+      },
+      {
+        "decision": "conv_10 placement -> npu",
+        "delta_mJ": -26.745424560166594,
+        "true_delta_mJ": -27.50515064413274
+      },
+      {
+        "decision": "conv_12 placement -> npu",
+        "delta_mJ": -16.35620310886178,
+        "true_delta_mJ": -19.766308114362637
+      },
+      {
+        "decision": "dw_15 placement -> npu",
+        "delta_mJ": -15.563579349788025,
+        "true_delta_mJ": -16.518577802401694
+      },
+      {
+        "decision": "add_28 placement -> npu",
+        "delta_mJ": -14.355581074599204,
+        "true_delta_mJ": -11.06619612174007
+      },
+      {
+        "decision": "bn_19 placement -> npu",
+        "delta_mJ": -14.298095991065384,
+        "true_delta_mJ": -11.084804710769088
+      },
+      {
+        "decision": "conv_35 placement -> npu",
+        "delta_mJ": -14.057083642868736,
+        "true_delta_mJ": -10.79833064392934
+      }
+    ]
+  },
+  "resnet": {
+    "oracle_E": 0.11646256129331882,
+    "predictor": {
+      "mape": 0.32786807132349793,
+      "unc_err_spearman": 0.2770869271731794
+    },
+    "explanation_fidelity": {
+      "pearson": 0.6432442814052048,
+      "spearman": 0.7275946457162873,
+      "n": 78
+    },
+    "example_explanation": [
+      {
+        "decision": "pool_4 placement -> npu",
+        "delta_mJ": -67.47623509328041,
+        "true_delta_mJ": -30.114672265230503
+      },
+      {
+        "decision": "conv_1 placement -> npu",
+        "delta_mJ": -54.51702130481344,
+        "true_delta_mJ": -61.412766277203794
+      },
+      {
+        "decision": "add_17 placement -> npu",
+        "delta_mJ": -52.07823816794621,
+        "true_delta_mJ": -26.73712816389321
+      },
+      {
+        "decision": "add_10 placement -> npu",
+        "delta_mJ": -51.87437591499787,
+        "true_delta_mJ": -26.73712816389321
+      },
+      {
+        "decision": "add_26 placement -> npu",
+        "delta_mJ": -31.962354940198807,
+        "true_delta_mJ": -25.1111536958581
+      },
+      {
+        "decision": "add_33 placement -> npu",
+        "delta_mJ": -31.962354940198807,
+        "true_delta_mJ": -25.111153695858114
+      },
+      {
+        "decision": "conv_5 placement -> npu",
+        "delta_mJ": -24.975634682689332,
+        "true_delta_mJ": -57.115256096199694
+      },
+      {
+        "decision": "conv_12 placement -> npu",
+        "delta_mJ": -24.753523706233707,
+        "true_delta_mJ": -57.115256096199694
+      }
+    ]
+  },
+  "bert": {
+    "oracle_E": 0.37030770829138826,
+    "predictor": {
+      "mape": 0.24576214485671397,
+      "unc_err_spearman": 0.4241005115505105
+    },
+    "explanation_fidelity": {
+      "pearson": 0.8310691152797989,
+      "spearman": 0.7964352748001525,
+      "n": 86
+    },
+    "example_explanation": [
+      {
+        "decision": "embed_1 placement -> gpu",
+        "delta_mJ": -12.88794519254143,
+        "true_delta_mJ": -10.109976095633016
+      },
+      {
+        "decision": "ln_29 placement -> gpu",
+        "delta_mJ": -12.740374229654776,
+        "true_delta_mJ": -6.741205991055551
+      },
+      {
+        "decision": "ln_15 placement -> gpu",
+        "delta_mJ": -11.920505843760623,
+        "true_delta_mJ": -6.632896911357449
+      },
+      {
+        "decision": "ffn1_25 placement -> gpu",
+        "delta_mJ": -9.770906499411069,
+        "true_delta_mJ": -21.832905208709093
+      },
+      {
+        "decision": "ffn1_39 placement -> gpu",
+        "delta_mJ": -9.770906499411069,
+        "true_delta_mJ": -21.832905208709107
+      },
+      {
+        "decision": "ffn2_27 placement -> gpu",
+        "delta_mJ": -9.749765994259775,
+        "true_delta_mJ": -21.61230286479497
+      },
+      {
+        "decision": "ffn2_41 placement -> gpu",
+        "delta_mJ": -9.749765994259775,
+        "true_delta_mJ": -21.61230286479497
+      },
+      {
+        "decision": "ffn1_11 placement -> gpu",
+        "delta_mJ": -8.529335027758641,
+        "true_delta_mJ": -10.658341008187591
+      }
+    ]
+  },
+  "pipeline": {
+    "oracle_E": 0.621907455163321,
+    "predictor": {
+      "mape": 0.25014836778829574,
+      "unc_err_spearman": 0.41144078601965056
+    },
+    "explanation_fidelity": {
+      "pearson": 0.7686915698798706,
+      "spearman": 0.9078331081870902,
+      "n": 60
+    },
+    "example_explanation": [
+      {
+        "decision": "conv_1 placement -> gpu",
+        "delta_mJ": -29.300388602860316,
+        "true_delta_mJ": -6.7482333225005355
+      },
+      {
+        "decision": "conv_4 placement -> gpu",
+        "delta_mJ": -25.6677736133206,
+        "true_delta_mJ": -5.384520479814032
+      },
+      {
+        "decision": "conv_7 placement -> gpu",
+        "delta_mJ": -12.041654980882617,
+        "true_delta_mJ": -5.333839447416608
+      },
+      {
+        "decision": "input_0 placement -> gpu",
+        "delta_mJ": -10.275875263259222,
+        "true_delta_mJ": -3.0107688380438358
+      },
+      {
+        "decision": "conv_13 placement -> gpu",
+        "delta_mJ": -4.604157708765472,
+        "true_delta_mJ": -3.9347532704358805
+      },
+      {
+        "decision": "conv_10 placement -> gpu",
+        "delta_mJ": -4.134404609273107,
+        "true_delta_mJ": -3.712129151483083
+      },
+      {
+        "decision": "conv_19 placement -> gpu",
+        "delta_mJ": -2.81229078853268,
+        "true_delta_mJ": -3.924513270435879
+      },
+      {
+        "decision": "conv_22 placement -> gpu",
+        "delta_mJ": -2.81229078853268,
+        "true_delta_mJ": -3.924513270435879
+      }
+    ]
+  }
+}
