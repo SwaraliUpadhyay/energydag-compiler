@@ -9,7 +9,7 @@ API
   GET  /api/benchmarks   aggregated results/results.csv (if you have run `make quick` / `make full`)
 """
 from __future__ import annotations
-import argparse, csv, json, math, os, sys, threading, time, traceback
+import argparse, contextlib, csv, json, math, os, sys, threading, time, traceback
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -29,6 +29,9 @@ from energydag.explain import explain
 from energydag.search.problem import Problem
 from energydag.search.methods import METHODS
 from energydag.search import baselines as B
+from energydag.search import active as active_mod
+from energydag.simulator import (Simulator, DEV_SPECS, NPU_FALLBACK_SLOWDOWN,
+                                 LINK_GBPS, LINK_LAT_MS, LINK_MJ_PER_MB)
 
 BUDGET_FREE = ["default", "fused_best_device"]
 RUN_LOCK = threading.Lock()                   # the oracle cache / numpy RNG work is not thread-safe
@@ -70,6 +73,125 @@ def graph_json(model):
     return dict(model=model, ops=ops, fusable=[[int(u), int(v)] for u, v in g.fusable])
 
 
+# ---------------------------------------------------------------------------------------------
+# Pipeline tracing: observe a run *without modifying the library* by wrapping a few functions
+# (Session.measure, Ensemble.fit, model_evo) for the duration of one run.
+# ---------------------------------------------------------------------------------------------
+class Tracer:
+    def __init__(self):
+        self.t0 = time.time()
+        self.events = []
+        self.model_evals = 0
+        self.best = 1.0
+
+    def log(self, kind, **kw):
+        self.events.append(dict(i=len(self.events), kind=kind, t=round(time.time() - self.t0, 3), **kw))
+
+
+@contextlib.contextmanager
+def traced(S):
+    tr = Tracer()
+    tr.log("measure", n=1, E=1.0, L=1.0, acc=float(S.acc[0]), feasible=True, new_best=False,
+           note="reference measurement of the default plan")
+    orig_measure, orig_evo = S.measure, B.model_evo
+    orig_ens = (active_mod.Ensemble, B.Ensemble)
+    orig_evo_a = active_mod.model_evo
+
+    class TracedEnsemble(Ensemble):
+        def fit(self, X, Y):
+            t = time.time()
+            out = super().fit(X, Y)
+            tr.log("fit", n_train=int(len(X)), members=int(self.k), dt_ms=(time.time() - t) * 1000)
+            return out
+
+    def measure(plan):
+        e, l = orig_measure(plan)
+        feas = bool(S.feasible_mask()[-1])
+        er = e / S.E0
+        new_best = feas and er < tr.best - 1e-12
+        if new_best:
+            tr.best = er
+        tr.log("measure", n=S.n, E=er, L=l / S.L0, acc=float(S.acc[-1]), feasible=feas, new_best=bool(new_best))
+        return e, l
+
+    def evo(problem, score_fn, rng, pop=40, gens=20, init=None):
+        cnt = [0]
+
+        def sf(plans):
+            cnt[0] += len(plans)
+            return score_fn(plans)
+        t = time.time()
+        out = orig_evo(problem, sf, rng, pop=pop, gens=gens, init=init)
+        tr.model_evals += cnt[0]
+        tr.log("search", pop=int(pop), gens=int(gens), candidates=int(cnt[0]), best_score=float(out[0][0]),
+               dt_ms=(time.time() - t) * 1000)
+        return out
+
+    S.measure = measure
+    active_mod.Ensemble = B.Ensemble = TracedEnsemble
+    B.model_evo = active_mod.model_evo = evo
+    try:
+        yield tr
+    finally:
+        del S.measure
+        active_mod.Ensemble, B.Ensemble = orig_ens
+        B.model_evo, active_mod.model_evo = orig_evo, orig_evo_a
+
+
+def schedule(g, ex):
+    """Re-play Simulator.true_cost on an ExecGraph and record *when* every fused node and every
+    cross-device transfer runs. Cross-checked against Simulator.true_cost so it cannot silently drift."""
+    M = ex.n
+    finish = np.zeros(M)
+    free = {0: 0.0, 1: 0.0, 2: 0.0}
+    preds = [[] for _ in range(M)]
+    for s_, d_, mb in zip(ex.src, ex.dst, ex.emb):
+        preds[d_].append((s_, mb))
+    roots = np.flatnonzero(ex.group == np.arange(g.n))
+    sizes = np.bincount(ex.group, minlength=g.n)
+    comp_e = link_e = 0.0
+    used, nodes, transfers = set(), [], []
+    for i in range(M):
+        d, p = int(ex.dev[i]), int(ex.prec[i])
+        sp = DEV_SPECS[d]
+        eff = 0.15 + 0.85 * ex.flops[i] / (ex.flops[i] + sp["knee"])
+        comp = ex.flops[i] / (sp["peak"][p] * eff)
+        mem_t = ex.mem[i] / sp["bw"]
+        body = max(comp, mem_t)
+        fallback = bool(d == 2 and ex.unsup[i])
+        if fallback:
+            body *= NPU_FALLBACK_SLOWDOWN
+        util = comp / body if body > 0 else 0.0
+        t = sp["launch"] + body
+        node_e = sp["dyn"] * (0.3 * t + 0.7 * util * body)
+        comp_e += node_e
+        ready = 0.0
+        for s_, mb in preds[i]:
+            tr = 0.0
+            if ex.dev[s_] != d:
+                tr = LINK_LAT_MS + mb / LINK_GBPS
+                link_e += LINK_MJ_PER_MB * mb
+                transfers.append(dict(src=int(s_), dst=i, from_dev=int(ex.dev[s_]), to_dev=d,
+                                      start=float(finish[s_]), end=float(finish[s_] + tr), mb=float(mb)))
+            ready = max(ready, finish[s_] + tr)
+        start = max(ready, free[d])
+        finish[i] = start + t
+        free[d] = finish[i]
+        used.add(d)
+        nodes.append(dict(id=i, name=g.ops[roots[i]].name, members=int(sizes[roots[i]]), dev=d, prec=p,
+                          start=float(start), end=float(finish[i]), mflop=float(ex.flops[i]),
+                          mem_mb=float(ex.mem[i]), bound="compute" if comp >= mem_t else "memory",
+                          npu_fallback=fallback, energy_mJ=float(node_e)))
+    lat = float(finish.max())
+    static_e = sum(DEV_SPECS[d]["static"] for d in used) * lat
+    total = comp_e + link_e + static_e
+    te, tl = Simulator.true_cost(ex)
+    return dict(nodes=nodes, transfers=transfers, latency_ms=lat, energy_mJ=total,
+                breakdown=dict(compute=comp_e, link=link_e, static=static_e),
+                devices_used=sorted(DEVICES[d] for d in used),
+                matches_simulator=bool(abs(total - te) <= 1e-6 * max(1.0, abs(te)) and abs(lat - tl) <= 1e-9 * max(1.0, tl)))
+
+
 def run(req):
     model, method = req.get("model", "mobilenet"), req.get("method", "active (ours)")
     if model not in ZOO:
@@ -84,7 +206,8 @@ def run(req):
     P = Problem(ZOO[model](), tol=tol, slack=slack)
     S = P.session(seed)
     t0 = time.time()
-    plan = METHODS[method](P, S, budget)
+    with traced(S) as tr:
+        plan = METHODS[method](P, S, budget)
     elapsed = time.time() - t0
     r = P.true_eval(plan)
     g = P.graph
@@ -123,7 +246,14 @@ def run(req):
                            energy_mJ=r["E"] * P.E0),
                measurements=S.n, elapsed_s=elapsed, ops=ops, summary=summary,
                trace=trace, measured=measured, explanation=rows, fidelity=fid,
-               explanation_source=source, stats=getattr(S, "stats", None))
+               explanation_source=source, stats=getattr(S, "stats", None),
+               events=tr.events,
+               counts=dict(measurements=S.n, fits=sum(e["kind"] == "fit" for e in tr.events),
+                           searches=sum(e["kind"] == "search" for e in tr.events), model_evals=tr.model_evals),
+               schedule=schedule(g, ex),
+               default_schedule=schedule(g, build_exec(g, P.default)),
+               search_space=dict(n_ops=int(g.n), n_fusable=int(len(g.fusable)),
+                                 log10=float(len(g.fusable) * math.log10(2) + 2 * g.n * math.log10(3))))
     if want_oracle:
         _, orc = B.oracle(P)
         out["oracle"] = dict(E=orc["E"], L=orc["L"], acc=orc["acc"])

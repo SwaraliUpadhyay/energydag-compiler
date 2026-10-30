@@ -40,6 +40,26 @@ th{color:var(--mut);font-weight:500;position:sticky;top:0;background:var(--card)
 .msg{color:var(--mut);padding:8px 0}.err{color:var(--bad)}
 pre{white-space:pre-wrap;background:var(--bg);padding:10px;border-radius:8px;border:1px solid var(--bd);overflow:auto}
 .hidden{display:none}
+
+.pipe{display:grid;gap:10px}
+.prow{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+.loopbox{border:2px dashed var(--bd);border-radius:10px;padding:10px;position:relative}
+.loopbox>.cap{position:absolute;top:-10px;left:12px;background:var(--card);padding:0 6px;font-size:12px;color:var(--mut)}
+.stage{border:1px solid var(--bd);border-radius:8px;padding:8px 10px;background:var(--bg);transition:all .15s}
+.stage b{display:block;font-size:13px}.stage p{margin:3px 0 6px;font-size:12px;color:var(--mut)}
+.stage .live{font-size:12px;font-weight:600;color:var(--acc)}
+.stage.on{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc);background:var(--card)}
+.stage.off{opacity:.45}.stage.off .live{color:var(--mut);font-weight:400}
+.flow{text-align:center;color:var(--mut);font-size:12px}
+.replay{display:flex;gap:8px;align-items:center;margin-bottom:8px}.replay input{flex:1}
+.btn.sm{padding:4px 10px;font-weight:500}
+.log{padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);margin-bottom:10px;min-height:38px}
+.round{margin:6px 0}.round b{margin-right:6px}
+.dot{width:14px;height:14px;border-radius:50%;border:0;margin:2px;cursor:pointer;padding:0;background:#9ca3af}
+.dot.ok{background:#60a5fa}.dot.bad{background:#f87171}.dot.best{background:#16a34a;box-shadow:0 0 0 2px #16a34a55}
+.dot.future{opacity:.25}.dot.cur{outline:2px solid var(--fg);outline-offset:1px}
+.seg{display:flex;height:12px;border-radius:4px;overflow:hidden;margin:6px 0 2px;background:var(--bd)}
+details{margin-top:10px}summary{cursor:pointer;color:var(--mut)}
 </style>
 </head>
 <body>
@@ -64,12 +84,37 @@ pre{white-space:pre-wrap;background:var(--bg);padding:10px;border-radius:8px;bor
     <div id="status" class="msg"></div>
   </div>
 
+  <div class="card">
+    <h2>Simulation pipeline &mdash; what happens under the hood</h2>
+    <div id="pipe" class="pipe"></div>
+  </div>
+
   <div class="card"><h2>Result</h2><div id="stats" class="stats"><div class="msg">Run a search to see results.</div></div></div>
 
   <div class="card">
     <h2>Task graph &mdash; placement &amp; precision</h2>
     <div class="scroll"><svg id="graph" height="120"></svg></div>
     <div class="legend" id="graph-legend"></div>
+  </div>
+
+  <div class="card">
+    <h2>Search timeline &amp; replay</h2>
+    <div class="replay"><button class="btn sm" id="rp-play">&#9654; Play</button><button class="btn sm" id="rp-prev">&#9664;</button><button class="btn sm" id="rp-next">&#9654;</button>
+      <input id="rp-slider" type="range" min="0" max="0" value="0"><span id="rp-pos" class="msg"></span></div>
+    <div id="rp-log" class="log msg">Run a search to replay it step by step.</div>
+    <div id="timeline"></div>
+    <div class="legend"><span><i style="background:#16a34a"></i>new best feasible plan</span><span><i style="background:#60a5fa"></i>feasible</span><span><i style="background:#f87171"></i>violates accuracy/latency limit</span><span>click a dot to jump to that measurement</span></div>
+    <details><summary>Raw event log</summary><div class="scroll"><table id="evlog"></table></div></details>
+  </div>
+
+  <div class="card">
+    <h2>One inference on the simulated platform (default plan vs recommended plan)</h2>
+    <div class="msg">Each bar is a fused node running on a device; orange bars are cross-device transfers; a red outline means an NPU-unsupported op fell back (8&times; slower). Both charts share one time axis.</div>
+    <div class="two">
+      <div><b>Default plan</b> <span id="sd-info" class="msg"></span><svg id="sched-d" viewBox="0 0 640 150" width="100%"></svg><div id="sd-bd"></div></div>
+      <div><b>Recommended plan</b> <span id="sf-info" class="msg"></span><svg id="sched-f" viewBox="0 0 640 150" width="100%"></svg><div id="sf-bd"></div></div>
+    </div>
+    <div id="sched-warn" class="msg err"></div>
   </div>
 
   <div class="two">
@@ -97,7 +142,7 @@ const $ = s => document.querySelector(s);
 const DEV = ["cpu", "gpu", "npu"], PREC = ["fp32", "fp16", "int8"];
 const DEVCOL = ["#6b7280", "#16a34a", "#7c3aed"], PRECCOL = ["#94a3b8", "#f59e0b", "#ef4444"];
 const PALETTE = ["#2563eb", "#dc2626", "#16a34a", "#d97706", "#7c3aed", "#0891b2", "#db2777", "#4b5563", "#65a30d"];
-let META = null, GRAPH = {}, BENCH = null;
+let META = null, GRAPH = {}, BENCH = null, RUN = null, REPLAY = 0, timer = null;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 const NS = "http://www.w3.org/2000/svg";
 function el(tag, attrs = {}, parent, text) {
@@ -122,6 +167,8 @@ function lineChart(svg, series, o = {}) {
   if (!pts.length) return;
   let x0 = Math.min(...pts.map(p => p[0])), x1 = Math.max(...pts.map(p => p[0]));
   let y0 = Math.min(...pts.map(p => p[1])), y1 = Math.max(...pts.map(p => p[1]));
+  if (o.xMax) x1 = Math.max(x1, o.xMax);
+  if (o.yMax) y1 = Math.max(y1, o.yMax);
   if (x0 === x1) x1 = x0 + 1;
   if (y0 === y1) { y0 *= .9; y1 *= 1.1; }
   if (!o.log) { const pad = (y1 - y0) * .08; y0 = Math.max(0, y0 - pad); y1 += pad; }
@@ -199,10 +246,9 @@ function renderRun(r) {
 
   drawGraph(GRAPH[r.model], r);
 
-  const series = [{name: "best feasible (measured, noisy)", pts: r.trace.map((v, i) => [i + 1, v])}];
-  if (r.oracle) series.push({name: "oracle", color: "#16a34a", dash: "5 4", pts: [[1, r.oracle.E], [Math.max(2, r.trace.length), r.oracle.E]]});
-  lineChart($("#conv"), series, {xLabel: "measurements", yLabel: "energy / default"});
-  legend($("#conv-legend"), series);
+  RUN = r;
+  renderPipeline(r); renderTimeline(r); renderSchedules(r);
+  setReplay(r.events.length - 1);
 
   const rows = r.explanation, mx = Math.max(1e-9, ...rows.flatMap(q => [Math.abs(q.delta_mJ), Math.abs(q.true_delta_mJ)]));
   const fid = r.fidelity && r.fidelity.pearson != null ? ` Fidelity vs simulator: Pearson ${r.fidelity.pearson.toFixed(2)}, Spearman ${r.fidelity.spearman.toFixed(2)} over ${r.fidelity.n} decisions.` : "";
@@ -218,6 +264,120 @@ function renderRun(r) {
 
   $("#plan").innerHTML = "<tr><th>#</th><th>op</th><th>kind</th><th>device</th><th>precision</th><th>fused into</th></tr>" +
     r.ops.map(o => `<tr><td>${o.i}</td><td>${esc(o.name)}</td><td>${o.kind}</td><td>${DEV[o.dev]}</td><td>${PREC[o.prec]}</td><td>${o.fused ? esc(r.ops[o.group].name) : ""}</td></tr>`).join("");
+}
+
+/* ---------- convergence (replay-aware) ---------- */
+function drawConv(r, n) {
+  const series = [{name: "best feasible measured plan (noisy)", pts: r.trace.slice(0, n).map((v, i) => [i + 1, v])}];
+  if (r.oracle) series.push({name: "oracle", color: "#16a34a", dash: "5 4", pts: [[1, r.oracle.E], [Math.max(2, r.trace.length), r.oracle.E]]});
+  lineChart($("#conv"), series, {xLabel: "measurements", yLabel: "energy / default", xMax: r.trace.length, yMax: 1});
+  legend($("#conv-legend"), series);
+}
+
+/* ---------- pipeline view ---------- */
+const STAGE_OF = {measure: "measure", fit: "model", search: "search"};
+function stagesFor(r) {
+  const c = r && r.counts, st = r && r.stats, free = r && META.budget_free.includes(r.method);
+  const usesModel = r && c.fits > 0, usesSearch = r && c.searches > 0;
+  return [
+    {id: "graph", g: "build", t: "1 · Model DAG", d: "Operators (conv, bn, relu, matmul…) with FLOPs and activation sizes.",
+      live: r ? `${r.summary.ops} operators` : ""},
+    {id: "plan", g: "build", t: "2 · Plan = the decisions", d: "Per operator: device (CPU/GPU/NPU) and precision (fp32/fp16/int8); one bit per fusable pair.",
+      live: r ? `search space ≈ 10^${r.search_space.log10.toFixed(0)} plans` : ""},
+    {id: "exec", g: "build", t: "3 · Fuse → executable graph", d: "Fused ops become one kernel: fewer memory round-trips and launches. Members inherit the head's device/precision.",
+      live: r ? `${r.summary.fused_groups} fused nodes (${r.summary.fused_edges} fusions)` : ""},
+    {id: "sim", g: "build", t: "4 · Simulator (stands in for hardware)", d: "Per node: max(compute, memory) time + launch cost, ×8 if the NPU can't run the op; link transfer when neighbours sit on different devices; device queues; dynamic + static energy.",
+      live: r ? `final plan: ${r.schedule.latency_ms.toFixed(2)} ms, ${r.schedule.energy_mJ.toFixed(1)} mJ per inference` : ""},
+    {id: "measure", g: "loop", t: "5 · Measure (spends budget)", d: "Run a plan through the simulator and add noise (~4% energy, ~2% latency). The only expensive step.",
+      live: r ? `${r.measurements}${free ? "" : " / " + r.budget} measurements` : ""},
+    {id: "model", g: "loop", t: "6 · Learn a cost model", d: "Featurise plans (graph-propagated node features); fit a bootstrap ensemble of small MLPs → predicted energy/latency + uncertainty (member disagreement).",
+      live: r ? (usesModel ? `${c.fits} ensemble fit(s)` : "not used by this method") : "", off: r && !usesModel},
+    {id: "search", g: "loop", t: "7 · Search on the model", d: "Evolve candidate plans scored on predictions only (no hardware). 'active' scores optimistically: mean − κ·std.",
+      live: r ? (usesSearch ? `${c.model_evals.toLocaleString()} candidates scored, 0 measured` : "not used by this method") : "", off: r && !usesSearch},
+    {id: "select", g: "loop", t: "8 · Choose what to measure", d: "Keep a diverse shortlist; measure only plans that could still beat the best measured one; otherwise explore the most uncertain.",
+      live: r ? (st ? `${st.rounds} rounds · ${st.skipped_confident} skipped as confidently worse · ${st.explore} exploration picks` : "no selection step in this method") : "", off: r && !st},
+    {id: "out", g: "out", t: "9 · Recommend & explain", d: "Return the best feasible measured plan; explain it by reverting each decision to the default and re-evaluating.",
+      live: r ? `${(r.result.E * 100).toFixed(1)}% of default energy` : ""},
+  ];
+}
+function renderPipeline(r) {
+  const S = stagesFor(r);
+  const box = x => `<div class="stage ${x.off ? "off" : ""}" data-stage="${x.id}"><b>${x.t}</b><p>${x.d}</p><div class="live">${x.live || "&nbsp;"}</div></div>`;
+  const grp = g => `<div class="prow">${S.filter(x => x.g === g).map(box).join("")}</div>`;
+  $("#pipe").innerHTML = grp("build") + `<div class="flow">&darr; plan &rarr; ExecGraph &rarr; simulator is the "hardware"; everything below only touches it through <b>Measure</b></div>` +
+    `<div class="loopbox"><span class="cap">repeat until the measurement budget is spent</span>${grp("loop")}</div><div class="flow">&darr;</div>` + grp("out");
+}
+
+/* ---------- timeline & replay ---------- */
+function evText(e) {
+  if (e.kind === "measure") return `Measurement #${e.n}: energy ${(e.E * 100).toFixed(0)}% of default, latency ${e.L.toFixed(2)}x, accuracy drop ${e.acc.toFixed(2)}% → ${e.feasible ? "feasible" : "violates a limit"}${e.new_best ? " · new best" : ""}${e.note ? " (" + e.note + ")" : ""}`;
+  if (e.kind === "fit") return `Fitted an ensemble of ${e.members} MLPs on ${e.n_train} measurements (${e.dt_ms.toFixed(0)} ms).`;
+  if (e.kind === "search") return `Model-only evolutionary search: ${e.candidates.toLocaleString()} candidate plans scored on predictions (best score ${e.best_score.toFixed(3)}, ${e.dt_ms.toFixed(0)} ms). No hardware used.`;
+  return e.kind;
+}
+function renderTimeline(r) {
+  let init = [], rounds = [], cur = null;
+  r.events.forEach(e => {
+    if (e.kind === "fit") { cur = {fit: e, search: null, ms: []}; rounds.push(cur); }
+    else if (e.kind === "search" && cur) cur.search = e;
+    else if (e.kind === "measure") (cur ? cur.ms : init).push(e);
+  });
+  const dot = e => `<button class="dot ${e.new_best ? "best" : e.feasible ? "ok" : "bad"}" data-i="${e.i}" title="#${e.n}: ${(e.E * 100).toFixed(0)}% energy, ${e.L.toFixed(2)}x latency"></button>`;
+  let h = `<div class="round"><b>${rounds.length ? "Initial profiling" : "Measurements"}</b><span class="msg">${init.length} measurements${rounds.length ? " (random plans, to train the first model)" : ""}</span><div>${init.map(dot).join("")}</div></div>`;
+  rounds.forEach((rd, k) => {
+    h += `<div class="round"><b>Round ${k + 1}</b><span class="msg">fit on ${rd.fit.n_train} → ${rd.search ? rd.search.candidates.toLocaleString() + " candidates scored" : "no search"} → measure ${rd.ms.length}</span><div>${rd.ms.map(dot).join("")}</div></div>`;
+  });
+  $("#timeline").innerHTML = h;
+  $("#rp-slider").max = r.events.length - 1;
+  $("#evlog").innerHTML = "<tr><th>t (s)</th><th>step</th><th>detail</th></tr>" + r.events.map(e => `<tr><td>${e.t.toFixed(2)}</td><td>${e.kind}</td><td>${esc(evText(e))}</td></tr>`).join("");
+}
+function setReplay(k) {
+  if (!RUN) return;
+  k = Math.max(0, Math.min(k, RUN.events.length - 1)); REPLAY = k;
+  const e = RUN.events[k];
+  $("#rp-slider").value = k; $("#rp-pos").textContent = `step ${k + 1} / ${RUN.events.length}`;
+  $("#rp-log").className = "log"; $("#rp-log").textContent = evText(e);
+  document.querySelectorAll(".stage").forEach(x => x.classList.toggle("on", x.dataset.stage === STAGE_OF[e.kind]));
+  document.querySelectorAll("#timeline .dot").forEach(d => { const i = +d.dataset.i; d.classList.toggle("future", i > k); d.classList.toggle("cur", i === k); });
+  drawConv(RUN, RUN.events.slice(0, k + 1).filter(x => x.kind === "measure").length);
+}
+function stopPlay() { if (timer) { clearInterval(timer); timer = null; $("#rp-play").innerHTML = "&#9654; Play"; } }
+
+/* ---------- schedule (Gantt) ---------- */
+function gantt(svg, sch, tmax) {
+  svg.innerHTML = "";
+  const ml = 38, W = 640, lane = 26, top = 8, xs = t => ml + t / tmax * (W - ml - 10);
+  ["cpu", "gpu", "npu", "link"].forEach((n, i) => {
+    el("text", {x: ml - 6, y: top + i * lane + 15, "text-anchor": "end"}, svg, n);
+    el("line", {x1: ml, x2: W - 10, y1: top + i * lane + lane - 2, y2: top + i * lane + lane - 2, stroke: "currentColor", opacity: .1}, svg);
+  });
+  sch.nodes.forEach(n => {
+    const x = xs(n.start), w = Math.max(1.5, xs(n.end) - x);
+    const rc = el("rect", {x, y: top + n.dev * lane + 2, width: w, height: lane - 7, fill: DEVCOL[n.dev], opacity: .9,
+      stroke: n.npu_fallback ? "#ef4444" : "none", "stroke-width": 1.5}, svg);
+    el("title", {}, rc, `${n.name}${n.members > 1 ? " (+" + (n.members - 1) + " fused)" : ""}\n${DEV[n.dev]} ${PREC[n.prec]} · ${n.bound}-bound${n.npu_fallback ? " · NPU fallback" : ""}\n${(n.end - n.start).toFixed(3)} ms · ${n.energy_mJ.toFixed(3)} mJ`);
+  });
+  sch.transfers.forEach(t => {
+    const x = xs(t.start), w = Math.max(1.5, xs(t.end) - x);
+    const rc = el("rect", {x, y: top + 3 * lane + 2, width: w, height: lane - 7, fill: "#f97316"}, svg);
+    el("title", {}, rc, `${DEV[t.from_dev]} → ${DEV[t.to_dev]}: ${t.mb.toFixed(2)} MB, ${(t.end - t.start).toFixed(3)} ms`);
+  });
+  for (let i = 0; i <= 4; i++) { const t = tmax * i / 4; el("text", {x: xs(t), y: top + 4 * lane + 14, "text-anchor": "middle"}, svg, t.toFixed(1) + " ms"); }
+}
+function breakdown(sch) {
+  const b = sch.breakdown, t = sch.energy_mJ, seg = (v, c, n) => `<div title="${n}: ${v.toFixed(2)} mJ" style="width:${v / t * 100}%;background:${c}"></div>`;
+  const pc = v => (v / t * 100).toFixed(0) + "%";
+  return `<div class="seg">${seg(b.compute, "#2563eb", "compute")}${seg(b.link, "#f97316", "link transfers")}${seg(b.static, "#6b7280", "static power")}</div>
+    <div class="legend"><span><i style="background:#2563eb"></i>compute ${pc(b.compute)}</span><span><i style="background:#f97316"></i>transfers ${pc(b.link)}</span><span><i style="background:#6b7280"></i>static ${pc(b.static)}</span></div>`;
+}
+function renderSchedules(r) {
+  const tmax = Math.max(r.schedule.latency_ms, r.default_schedule.latency_ms);
+  gantt($("#sched-d"), r.default_schedule, tmax); gantt($("#sched-f"), r.schedule, tmax);
+  const info = s => `${s.latency_ms.toFixed(2)} ms · ${s.energy_mJ.toFixed(1)} mJ · ${s.nodes.length} nodes · devices: ${s.devices_used.join("+")}`;
+  $("#sd-info").textContent = info(r.default_schedule); $("#sf-info").textContent = info(r.schedule);
+  $("#sd-bd").innerHTML = breakdown(r.default_schedule); $("#sf-bd").innerHTML = breakdown(r.schedule);
+  $("#sched-warn").textContent = (r.schedule.matches_simulator && r.default_schedule.matches_simulator) ? "" :
+    "Warning: this schedule view no longer matches Simulator.true_cost (the simulator was changed); totals shown may differ slightly.";
 }
 
 /* ---------- benchmarks ---------- */
@@ -265,7 +425,18 @@ async function init() {
   $("#tab-run").onclick = () => setTab("run"); $("#tab-bench").onclick = () => setTab("bench");
   $("#b-model").onchange = renderBench;
   $("#budget").oninput = syncBudget; $("#method").onchange = syncBudget; $("#model").onchange = showGraph;
-  syncBudget(); showGraph();
+  syncBudget(); showGraph(); renderPipeline(null);
+  $("#rp-slider").oninput = e => { stopPlay(); setReplay(+e.target.value); };
+  $("#rp-prev").onclick = () => { stopPlay(); setReplay(REPLAY - 1); };
+  $("#rp-next").onclick = () => { stopPlay(); setReplay(REPLAY + 1); };
+  $("#timeline").onclick = e => { const b = e.target.closest(".dot"); if (b) { stopPlay(); setReplay(+b.dataset.i); } };
+  $("#rp-play").onclick = () => {
+    if (timer) return stopPlay();
+    if (!RUN) return;
+    if (REPLAY >= RUN.events.length - 1) setReplay(0);
+    $("#rp-play").innerHTML = "&#9632; Stop";
+    timer = setInterval(() => { if (REPLAY >= RUN.events.length - 1) stopPlay(); else setReplay(REPLAY + 1); }, 220);
+  };
   $("#run").onclick = async () => {
     const btn = $("#run"), st = $("#status"), t0 = Date.now();
     btn.disabled = true; st.className = "msg";
